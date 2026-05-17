@@ -56,6 +56,7 @@
         .guide.horizontal { height: 2px; width: 100%; left: 0; cursor: ns-resize; }
         .guide.vertical { width: 2px; height: 100%; top: 0; cursor: ew-resize; }
         .guide:hover { background: #ff00ff; }
+        .guide.selected { background: #ff4757 !important; box-shadow: 0 0 0 1px rgba(255,255,255,0.6), 0 0 8px rgba(255,71,87,0.8); z-index: 11; }
 
         #preview-panel { width: 300px; background: #252526; border-left: 1px solid #3d3d3d; display: flex; flex-direction: column; z-index: 99; }
         #preview-list { flex: 1; overflow-y: auto; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
@@ -217,7 +218,7 @@
     </div>
 
     <script>
-        let tabs = [], currentTabId = 0, currentTool = 'guide', isDrawing = false, selectionBox = null;
+        let tabs = [], currentTabId = 0, currentTool = 'guide', isDrawing = false, selectionBox = null, selectedGuide = null;
         const tabBar = document.getElementById('tab-bar'), tabContents = document.getElementById('tab-contents');
         const previewList = document.getElementById('preview-list'), loading = document.getElementById('loading-overlay');
         const loadingText = document.getElementById('loading-text'), loadingSub = document.getElementById('loading-sub');
@@ -226,6 +227,11 @@
 
         function showToast(msg) { toast.innerText = msg; toast.style.opacity = '1'; setTimeout(() => toast.style.opacity = '0', 2000); }
         function getTabById(tabId) { return tabs.find(t => t.id === tabId); }
+        function selectGuide(guide) {
+            if (selectedGuide) selectedGuide.classList.remove('selected');
+            selectedGuide = guide || null;
+            if (selectedGuide) selectedGuide.classList.add('selected');
+        }
 
         // --- 커스텀 모달 JS 제어 ---
         const customModal = document.getElementById('custom-modal');
@@ -280,7 +286,7 @@
             document.querySelector(`.tab-item[data-id="${tabId}"]`).classList.add('active');
             document.querySelectorAll('.tab-content').forEach(b => b.classList.remove('active'));
             document.getElementById(`tab-content-${tabId}`).classList.add('active');
-            selectionBox = null; clearOverlay(tabId); updatePreviews(); setTool(currentTool); applyZoom(tabId);
+            selectGuide(null); selectionBox = null; clearOverlay(tabId); updatePreviews(); setTool(currentTool); applyZoom(tabId);
         }
 
         function closeTab(tabId, event) {
@@ -390,11 +396,33 @@
                     tab.tempCanvas.getContext('2d').drawImage(mainCanvas, 0, 0); updatePreviews();
                 }
             });
+
+            // 가이드 툴: 빈 캔버스 영역 클릭 시 선택 해제
+            canvasWrapper.addEventListener('mousedown', (e) => {
+                if (currentTool !== 'guide' || currentTabId !== tabId) return;
+                if (!e.target.classList.contains('guide')) selectGuide(null);
+            });
         }
 
         document.addEventListener('keydown', (e) => {
             const isCtrl = e.metaKey || e.ctrlKey;
-            if (isCtrl && e.key.toLowerCase() === 'z') { 
+            // Delete/Backspace: 선택된 가이드선 삭제 (input 포커스 중 오동작 방지)
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedGuide && !isCtrl) {
+                const activeEl = document.activeElement;
+                const isInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.contentEditable === 'true');
+                if (!isInput && currentTabId !== 0) {
+                    e.preventDefault();
+                    saveStateToUndoStack(currentTabId);
+                    selectedGuide.remove();
+                    updateGuidesState(currentTabId);
+                    updatePreviews();
+                    selectGuide(null);
+                    showToast('가이드선이 삭제되었습니다.');
+                }
+            }
+            // ESC: 가이드선 선택 해제
+            if (e.key === 'Escape') selectGuide(null);
+            if (isCtrl && e.key.toLowerCase() === 'z') {
                 e.preventDefault(); const tab = getTabById(currentTabId);
                 if (tab && tab.undoStack.length > 0) {
                     const prevState = tab.undoStack.pop();
@@ -533,12 +561,26 @@
             };
             window.addEventListener('mousemove', move); window.addEventListener('mouseup', up); move(e);
             
-            guide.onmousedown = (ev) => { 
-                if (currentTool !== 'guide') return; 
-                ev.stopPropagation(); 
-                saveStateToUndoStack(tabId); // 드래그 시작 전 Undo 상태 저장
-                window.addEventListener('mousemove', move); 
-                window.addEventListener('mouseup', up); 
+            guide.onmousedown = (ev) => {
+                if (currentTool !== 'guide') return;
+                ev.stopPropagation();
+                const startX = ev.clientX, startY = ev.clientY;
+                let hasDragged = false, undoSaved = false;
+                const guideMove = (me) => {
+                    if (!hasDragged && (Math.abs(me.clientX - startX) > 3 || Math.abs(me.clientY - startY) > 3)) {
+                        hasDragged = true;
+                        if (!undoSaved) { saveStateToUndoStack(tabId); undoSaved = true; }
+                    }
+                    if (hasDragged) move(me);
+                };
+                const guideUp = () => {
+                    window.removeEventListener('mousemove', guideMove);
+                    window.removeEventListener('mouseup', guideUp);
+                    if (hasDragged) { updateGuidesState(tabId); updatePreviews(); }
+                    else selectGuide(guide);
+                };
+                window.addEventListener('mousemove', guideMove);
+                window.addEventListener('mouseup', guideUp);
             };
 
             // 더블클릭 시 삭제 (취소/제거) 구현
@@ -555,6 +597,7 @@
         window.createGuide = createGuide; // HTML onClick 연결
 
         function renderGuides(tabId) {
+            selectGuide(null);
             const tab = getTabById(tabId), canvasWrapper = document.getElementById(`tab-content-${tabId}`).querySelector('#canvas-wrapper');
             document.getElementById(`tab-content-${tabId}`).querySelectorAll('.guide').forEach(g => g.remove());
             tab.guides.h.forEach(pos => { const g = document.createElement('div'); g.className = 'guide horizontal'; g.style.top = (pos / tab.img.height * 100) + '%'; g.dataset.pos = pos; canvasWrapper.appendChild(g); });
@@ -642,34 +685,33 @@
             }
         };
 
-        async function downloadZIP() {
+        async function downloadZIP(baseName, today) {
             if (typeof JSZip === 'undefined') {
                 showAlert('ZIP 라이브러리(JSZip)가 로드되지 않았거나 차단되었습니다. 인터넷 연결을 확인해 주세요.');
                 return;
             }
-            
-            const tab = getTabById(currentTabId);
-            const originalName = tab ? tab.name : 'slices';
-            let baseName = 'slices';
-            if (originalName) {
-                const lastDotIdx = originalName.lastIndexOf('.');
-                baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+            if (!baseName) {
+                const tab = getTabById(currentTabId);
+                const originalName = tab ? tab.name : '';
+                baseName = 'body-editor';
+                if (originalName && originalName !== '새 이미지') {
+                    const lastDotIdx = originalName.lastIndexOf('.');
+                    baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+                }
             }
+            if (!today) today = new Date().toISOString().split('T')[0];
 
-            const zip = new JSZip(); 
+            const zip = new JSZip();
             previewList.querySelectorAll('img').forEach((m, i) => zip.file(`slice_${i+1}.png`, m.src.split(',')[1], {base64: true}));
             const content = await zip.generateAsync({type:"blob"});
             const blobUrl = URL.createObjectURL(content);
-            
-            const a = document.createElement('a'); 
-            a.href = blobUrl; 
-            a.download = `${baseName}_slices.zip`; 
-            
-            // 크로스 브라우저 표준 DOM 바인딩 다운로드
+
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = `${baseName}-${today}_slices.zip`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            
             setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
         }
         window.downloadZIP = downloadZIP;
@@ -815,35 +857,36 @@
                 showAlert('저장할 이미지가 없습니다.');
                 return;
             }
-            if (imgs.length === 1) {
-                const img = imgs[0];
-                const tab = getTabById(currentTabId);
-                const originalName = tab ? tab.name : 'image';
-                
-                let baseName = 'image';
-                if (originalName) {
-                    const lastDotIdx = originalName.lastIndexOf('.');
-                    baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+            const today = new Date().toISOString().split('T')[0];
+            const tab = getTabById(currentTabId);
+            const originalName = tab ? tab.name : '';
+            let baseName = 'body-editor';
+            if (originalName && originalName !== '새 이미지') {
+                const lastDotIdx = originalName.lastIndexOf('.');
+                baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+            }
+            try {
+                if (imgs.length === 1) {
+                    const img = imgs[0];
+                    const blob = dataURLtoBlob(img.src);
+                    if (!blob || blob.size === 0) throw new Error('빈 Blob 생성');
+                    const blobUrl = URL.createObjectURL(blob);
+                    const fileName = `${baseName}-${today}.png`;
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+                    showToast('브라우저 기본 다운로드 위치에 저장됐어요 📁');
+                } else {
+                    await downloadZIP(baseName, today);
+                    showToast('브라우저 기본 다운로드 위치에 저장됐어요 📁');
                 }
-                
-                // Data URL의 크기/보안 한계를 넘기 위해 Blob으로 변환하여 안전 다운로드
-                const blob = dataURLtoBlob(img.src);
-                const blobUrl = URL.createObjectURL(blob);
-                
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = `${baseName}_edited.png`;
-                
-                // 크로스 브라우저 표준 DOM 바인딩 다운로드
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                
-                setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
-                showToast('PNG 이미지 저장 완료!');
-            } else {
-                await downloadZIP();
-                showToast('ZIP 압축 저장 완료!');
+            } catch (err) {
+                console.error('저장 실패:', err);
+                showAlert('저장 중 오류가 발생했습니다. 다시 시도해주세요.');
             }
         };
 
