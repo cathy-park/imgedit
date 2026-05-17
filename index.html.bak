@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Web Editor - High Quality AI Background & SVG Converter</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="shortcut icon" type="image/png" href="favicon.png">
+    <link rel="apple-touch-icon" href="favicon.png">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.js"></script>
+    
+    <script type="module">
+        import imglyRemoveBackground from "https://esm.sh/@imgly/background-removal@1.4.3";
+        // 전역에서 사용할 수 있도록 window 객체에 할당
+        window.imglyRemoveBackground = imglyRemoveBackground;
+    </script>
+
+    <style>
+        :root { --ruler-size: 30px; --accent: #0078d7; --bg: #1e1e1e; --text: #ccc; --tab-active: #333; }
+        body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+        
+        #tab-bar { display: flex; background: #2d2d2d; border-bottom: 1px solid #3d3d3d; padding-left: 5px; z-index: 101; overflow-x: auto; }
+        .tab-item { padding: 8px 15px; border-right: 1px solid #3d3d3d; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; color: #aaa; transition: 0.2s; white-space: nowrap; }
+        .tab-item.active { background: var(--tab-active); color: #fff; font-weight: 500; }
+        .tab-item .close-tab { font-size: 16px; opacity: 0.6; }
+        .tab-item .close-tab:hover { opacity: 1; color: #ff4757; }
+        .add-tab-btn { padding: 8px 12px; font-size: 18px; color: #aaa; cursor: pointer; background: none; border: none; }
+        .add-tab-btn:hover { color: #fff; }
+
+        .toolbar { padding: 8px 20px; background: #2d2d2d; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #3d3d3d; z-index: 100; flex-wrap: wrap; }
+        .toolbar button { padding: 6px 12px; border: none; border-radius: 4px; background: #444; color: white; cursor: pointer; font-size: 13px; font-weight: 500; transition: 0.2s; }
+        .toolbar button:hover { background: #555; }
+        .toolbar button.active { background: var(--accent); box-shadow: inset 0 0 5px rgba(0,0,0,0.5); }
+        .toolbar .divider { width: 1px; height: 20px; background: #555; margin: 0 5px; }
+        .toolbar .btn-svg { background: #e67e22; } .toolbar .btn-svg:hover { background: #d35400; }
+        .toolbar .btn-ai { background: #8a2be2; } .toolbar .btn-ai:hover { background: #7a28c9; }
+        
+        #main-layout { display: flex; flex: 1; overflow: hidden; position: relative; }
+        #tab-contents { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .tab-content { display: none; flex: 1; position: relative; overflow: auto; flex-direction: column; background: #121212; }
+        .tab-content.active { display: flex; }
+        
+        #ruler-h { height: var(--ruler-size); background: #333; border-bottom: 1px solid #555; position: sticky; top: 0; z-index: 60; cursor: ns-resize; min-width: 100%; }
+        #content-area { display: flex; flex: 1; min-height: 0; }
+        #ruler-v { width: var(--ruler-size); background: #333; border-right: 1px solid #555; position: sticky; left: 0; z-index: 60; cursor: ew-resize; min-height: 100%; }
+        
+        #canvas-wrapper { position: relative; padding: 0; transform-origin: top left; }
+        canvas { position: absolute; top: 0; left: 0; transform-origin: top left; }
+        #bgCanvas { background-image: linear-gradient(45deg, #eee 25%, transparent 25%), linear-gradient(-45deg, #eee 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #eee 75%), linear-gradient(-45deg, transparent 75%, #eee 75%); background-size: 20px 20px; background-color: #fff; z-index: 1; }
+        #mainCanvas { z-index: 2; }
+        #overlayCanvas { z-index: 3; pointer-events: none; }
+
+        .guide { position: absolute; background: #00fffc; z-index: 10; pointer-events: auto; }
+        .guide.horizontal { height: 2px; width: 100%; left: 0; cursor: ns-resize; }
+        .guide.vertical { width: 2px; height: 100%; top: 0; cursor: ew-resize; }
+        .guide:hover { background: #ff00ff; }
+
+        #preview-panel { width: 300px; background: #252526; border-left: 1px solid #3d3d3d; display: flex; flex-direction: column; z-index: 99; }
+        #preview-list { flex: 1; overflow-y: auto; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+        .preview-item { background: #1a1a1a; border: 1px solid #444; border-radius: 4px; overflow: hidden; font-size: 10px; text-align: center; }
+        .preview-item img { width: 100%; display: block; background: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAO0lEQVQYV2NkYGAwYkAD////ZwzqwLpAAyExI4gB2AhsGlEAuwlsGlEAuwlsGgG/CRvN1E3gNIFHIwMA1nMcxGfB7X8AAAAASUVORK5CYII='); }
+
+        #loading-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 2000; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+        .loader { width: 48px; height: 48px; border: 5px solid #FFF; border-bottom-color: transparent; border-radius: 50%; animation: rotation 1s linear infinite; }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2ecc71; color: white; padding: 10px 20px; border-radius: 20px; font-size: 14px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 9999; }
+
+        #custom-cursor { position: fixed; pointer-events: none; display: none; z-index: 9999; transform: translate(-50%, -50%); border: 1.5px solid #fff; box-shadow: 0 0 0 1px #000; border-radius: 50%; }
+        #custom-cursor::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border-radius: 50%; }
+        .cursor-wand { width: 12px !important; height: 12px !important; }
+        .cursor-wand::after { width: 2px; height: 2px; background: #fff; box-shadow: 0 0 0 1px #000; }
+        #zoom-info { font-size: 12px; color: #888; font-weight: bold; min-width: 45px; text-align: center; }
+        .sub-text { font-size: 11px; color: #aaa; margin-top: 10px; max-width: 80%; }
+
+        /* --- 커스텀 모달 스타일 --- */
+        #custom-modal { 
+            display: none; position: fixed; inset: 0; 
+            background: rgba(0,0,0,0.6); z-index: 10000; 
+            align-items: center; justify-content: center; 
+            backdrop-filter: blur(4px); animation: fadeIn 0.2s ease-out; 
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .modal-box { 
+            background: #252526; border: 1px solid #444; border-radius: 16px; 
+            padding: 28px; width: 320px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); 
+            text-align: center; transform: translateY(0); animation: slideUp 0.3s ease-out;
+        }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .modal-box h3 { margin: 0 0 12px; color: #fff; font-size: 18px; font-weight: 600; }
+        .modal-box p { color: #aaa; font-size: 14px; line-height: 1.6; margin-bottom: 28px; white-space: pre-wrap; }
+        .modal-btn-wrap { display: flex; gap: 10px; justify-content: center; }
+        .modal-btn-wrap button { 
+            padding: 10px 24px; border: none; border-radius: 8px; 
+            font-size: 14px; font-weight: 600; cursor: pointer; transition: 0.2s;
+        }
+        #modal-ok { background: var(--accent); color: white; }
+        #modal-ok:hover { background: #006ec5; }
+        #modal-cancel { background: #3e3e42; color: #ccc; }
+        #modal-cancel:hover { background: #4e4e52; color: #fff; }
+
+        /* 드래그앤드롭 오버레이 스타일 */
+        #drag-drop-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(30, 30, 30, 0.85);
+            backdrop-filter: blur(8px);
+            z-index: 99999;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            border: 4px dashed var(--accent);
+            margin: 15px;
+            border-radius: 12px;
+            box-shadow: 0 0 30px rgba(0, 120, 215, 0.3);
+            pointer-events: none;
+            transition: all 0.3s ease;
+        }
+        #drag-drop-overlay.active {
+            display: flex;
+            animation: pulseBorder 1.5s infinite alternate;
+        }
+        #drag-drop-overlay .overlay-box {
+            text-align: center;
+            color: #fff;
+        }
+        #drag-drop-overlay .overlay-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+            animation: bounceIcon 1s infinite alternate;
+        }
+        #drag-drop-overlay h2 {
+            font-size: 24px;
+            margin: 0 0 10px;
+            font-weight: 600;
+        }
+        #drag-drop-overlay p {
+            color: #aaa;
+            font-size: 14px;
+        }
+        @keyframes pulseBorder {
+            from { border-color: var(--accent); box-shadow: 0 0 20px rgba(0, 120, 215, 0.2); }
+            to { border-color: #8a2be2; box-shadow: 0 0 40px rgba(138, 43, 226, 0.4); }
+        }
+        @keyframes bounceIcon {
+            from { transform: translateY(0); }
+            to { transform: translateY(-10px); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading-overlay">
+        <span class="loader"></span>
+        <p id="loading-text" style="margin-top: 20px; font-weight: bold;">처리 중...</p>
+        <p class="sub-text" id="loading-sub"></p>
+    </div>
+    <div id="toast">알림</div>
+    <div id="custom-cursor"></div>
+
+    <!-- 드래그앤드롭 오버레이 -->
+    <div id="drag-drop-overlay">
+        <div class="overlay-box">
+            <div class="overlay-icon">📥</div>
+            <h2>이미지를 여기에 드롭하세요</h2>
+            <p>드롭하면 즉시 새 탭에서 이미지 편집이 시작됩니다.</p>
+        </div>
+    </div>
+
+    <!-- --- 커스텀 모달 HTML --- -->
+    <div id="custom-modal">
+        <div class="modal-box">
+            <h3 id="modal-title">알림</h3>
+            <p id="modal-text">내용</p>
+            <div class="modal-btn-wrap">
+                <button id="modal-cancel">취소</button>
+                <button id="modal-ok">확인</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-bar"><button class="add-tab-btn" onclick="createNewTab()" title="새 탭 추가">+</button></div>
+
+    <div class="toolbar">
+        <strong>🖌️ Pro Web Editor</strong>
+        <button onclick="document.getElementById('file-input').click()">📂 열기</button>
+        <input type="file" id="file-input" style="display:none;" accept="image/*">
+        
+        <div class="divider"></div>
+        <button id="tool-guide" class="active" onclick="setTool('guide')">📏 가이드선</button>
+        <button id="tool-select" onclick="setTool('select')">⬚ 사각 선택</button>
+        <button id="tool-eraser" onclick="setTool('eraser')">🧹 지우개</button>
+        <input type="range" id="eraser-size" min="5" max="100" value="20" style="width:50px;" oninput="updateCursorSize()">
+        <button id="tool-wand" onclick="setTool('wand')">🪄 마술봉</button>
+        <input type="range" id="wand-tolerance" min="0" max="255" value="30" style="width:50px;">
+        
+        <div class="divider"></div>
+        <button class="btn-ai" id="remove-bg-btn" onclick="removeBackgroundLocally()">✨ 고화질 AI 누끼</button>
+        
+        <div class="divider"></div>
+        <button class="btn-svg" onclick="downloadSVG()">🎨 깔끔한 SVG 변환</button>
+        <button id="save-btn" onclick="saveFile()" style="background:var(--accent);">💾 PNG 저장</button>
+        
+        <div class="divider"></div>
+        <span id="zoom-info">100%</span>
+        <span style="font-size:11px; color:#666; margin-left:auto;">Ctrl+C/V/Z | 휠(확대/축소)</span>
+    </div>
+
+    <div id="main-layout">
+        <div id="tab-contents"></div>
+        <div id="preview-panel">
+            <div style="padding:10px; background:#333; font-weight:bold;">조각 미리보기</div>
+            <div id="preview-list"></div>
+        </div>
+    </div>
+
+    <script>
+        let tabs = [], currentTabId = 0, currentTool = 'guide', isDrawing = false, selectionBox = null;
+        const tabBar = document.getElementById('tab-bar'), tabContents = document.getElementById('tab-contents');
+        const previewList = document.getElementById('preview-list'), loading = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text'), loadingSub = document.getElementById('loading-sub');
+        const toast = document.getElementById('toast'), customCursor = document.getElementById('custom-cursor');
+        const zoomInfo = document.getElementById('zoom-info');
+
+        function showToast(msg) { toast.innerText = msg; toast.style.opacity = '1'; setTimeout(() => toast.style.opacity = '0', 2000); }
+        function getTabById(tabId) { return tabs.find(t => t.id === tabId); }
+
+        // --- 커스텀 모달 JS 제어 ---
+        const customModal = document.getElementById('custom-modal');
+        const modalTitle = document.getElementById('modal-title');
+        const modalText = document.getElementById('modal-text');
+        const modalOk = document.getElementById('modal-ok');
+        const modalCancel = document.getElementById('modal-cancel');
+
+        function showAlert(msg, onOk) {
+            modalTitle.innerText = '알림';
+            modalText.innerText = msg;
+            modalCancel.style.display = 'none';
+            modalOk.onclick = () => { customModal.style.display = 'none'; if(onOk) onOk(); };
+            customModal.style.display = 'flex';
+        }
+        function showConfirm(msg, onOk) {
+            modalTitle.innerText = '확인';
+            modalText.innerText = msg;
+            modalCancel.style.display = 'block';
+            modalOk.onclick = () => { customModal.style.display = 'none'; if(onOk) onOk(); };
+            modalCancel.onclick = () => { customModal.style.display = 'none'; };
+            customModal.style.display = 'flex';
+        }
+
+        function createNewTab(src = null, name = '새 이미지') {
+            const tabId = Date.now();
+            const tabItem = document.createElement('div');
+            tabItem.className = 'tab-item'; tabItem.dataset.id = tabId; tabItem.onclick = () => switchToTab(tabId);
+            tabItem.innerHTML = `<span>${name}</span><span class="close-tab" onclick="closeTab(${tabId}, event)">&times;</span>`;
+            tabBar.insertBefore(tabItem, document.querySelector('.add-tab-btn'));
+
+            const tabContent = document.createElement('div');
+            tabContent.className = 'tab-content'; tabContent.id = `tab-content-${tabId}`;
+            tabContent.innerHTML = `
+                <div id="ruler-h" onmousedown="createGuide('horizontal', event, ${tabId})"></div>
+                <div id="content-area">
+                    <div id="ruler-v" onmousedown="createGuide('vertical', event, ${tabId})"></div>
+                    <div id="canvas-wrapper">
+                        <canvas class="bg-canvas"></canvas><canvas class="main-canvas"></canvas><canvas class="overlay-canvas"></canvas>
+                    </div>
+                </div>`;
+            tabContents.appendChild(tabContent);
+
+            tabs.push({ id: tabId, name: name, img: null, tempCanvas: document.createElement('canvas'), guides: { h: [], v: [] }, undoStack: [], zoom: 1 });
+            initCanvases(tabId);
+            if (src) loadImage(tabId, src); else switchToTab(tabId);
+        }
+
+        function switchToTab(tabId) {
+            currentTabId = tabId;
+            document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
+            document.querySelector(`.tab-item[data-id="${tabId}"]`).classList.add('active');
+            document.querySelectorAll('.tab-content').forEach(b => b.classList.remove('active'));
+            document.getElementById(`tab-content-${tabId}`).classList.add('active');
+            selectionBox = null; clearOverlay(tabId); updatePreviews(); setTool(currentTool); applyZoom(tabId);
+        }
+
+        function closeTab(tabId, event) {
+            event.stopPropagation();
+            showConfirm('탭을 닫으시겠습니까?', () => {
+                tabs = tabs.filter(t => t.id !== tabId);
+                document.querySelector(`.tab-item[data-id="${tabId}"]`).remove();
+                document.getElementById(`tab-content-${tabId}`).remove();
+                if (currentTabId === tabId) {
+                    if (tabs.length > 0) switchToTab(tabs[0].id); else { currentTabId = 0; previewList.innerHTML = ''; zoomInfo.innerText = "100%"; }
+                }
+            });
+        }
+
+        function clearOverlay(tabId) {
+            const oCanvas = document.getElementById(`tab-content-${tabId}`)?.querySelector('.overlay-canvas');
+            if(oCanvas) oCanvas.getContext('2d').clearRect(0, 0, oCanvas.width, oCanvas.height);
+        }
+
+        function applyZoom(tabId) {
+            const tab = getTabById(tabId); if (!tab || !tab.img) return;
+            zoomInfo.innerText = Math.round(tab.zoom * 100) + '%';
+            const wrapper = document.getElementById(`tab-content-${tabId}`).querySelector('#canvas-wrapper');
+            const canvases = wrapper.querySelectorAll('canvas');
+            const newW = tab.img.width * tab.zoom, newH = tab.img.height * tab.zoom;
+            wrapper.style.width = newW + 'px'; wrapper.style.height = newH + 'px';
+            canvases.forEach(c => { c.style.width = newW + 'px'; c.style.height = newH + 'px'; });
+            updateCursorSize();
+        }
+
+        window.addEventListener('wheel', (e) => {
+            if ((e.ctrlKey || e.metaKey) && currentTabId !== 0) {
+                e.preventDefault(); const tab = getTabById(currentTabId);
+                tab.zoom = Math.max(0.1, Math.min(tab.zoom + (e.deltaY > 0 ? -0.1 : 0.1), 5)); applyZoom(currentTabId);
+            }
+        }, { passive: false });
+
+        document.addEventListener('mousemove', (e) => {
+            if (currentTabId === 0) return;
+            if (currentTool === 'eraser' || currentTool === 'wand') {
+                const wrapper = document.getElementById(`tab-content-${currentTabId}`).querySelector('#canvas-wrapper');
+                const rect = wrapper.getBoundingClientRect();
+                if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                    customCursor.style.left = e.clientX + 'px'; customCursor.style.top = e.clientY + 'px';
+                    customCursor.style.display = 'block'; wrapper.style.cursor = 'none';
+                } else { customCursor.style.display = 'none'; wrapper.style.cursor = 'default'; }
+            } else { customCursor.style.display = 'none'; }
+        });
+
+        function updateCursorSize() {
+            if (currentTool === 'eraser') {
+                const z = getTabById(currentTabId)?.zoom || 1;
+                const size = document.getElementById('eraser-size').value * z;
+                customCursor.className = ''; customCursor.style.width = size + 'px'; customCursor.style.height = size + 'px';
+            } else if (currentTool === 'wand') customCursor.className = 'cursor-wand';
+        }
+
+        function initCanvases(tabId) {
+            const tabContent = document.getElementById(`tab-content-${tabId}`);
+            const canvasWrapper = tabContent.querySelector('#canvas-wrapper');
+            const mainCanvas = tabContent.querySelector('.main-canvas');
+            const overlayCanvas = tabContent.querySelector('.overlay-canvas');
+            const oCtx = overlayCanvas.getContext('2d');
+            const tab = getTabById(tabId);
+
+            canvasWrapper.addEventListener('mousedown', (e) => {
+                if (!tab.img || currentTool === 'guide') return;
+                const rect = mainCanvas.getBoundingClientRect();
+                const x = (e.clientX - rect.left) / tab.zoom, y = (e.clientY - rect.top) / tab.zoom;
+                isDrawing = true;
+
+                if (currentTool === 'select') { selectionBox = { x: x, y: y, w: 0, h: 0 }; clearOverlay(tabId); } 
+                else if (currentTool === 'eraser') {
+                    const ctx = mainCanvas.getContext('2d'); saveStateToUndoStack(tabId); 
+                    ctx.globalCompositeOperation = 'destination-out'; ctx.lineWidth = document.getElementById('eraser-size').value;
+                    ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x, y);
+                } 
+                else if (currentTool === 'wand') {
+                    saveStateToUndoStack(tabId); floodFillTransparent(tab.tempCanvas, x, y, document.getElementById('wand-tolerance').value);
+                    updateMainCanvas(tabId); updatePreviews();
+                }
+            });
+
+            canvasWrapper.addEventListener('mousemove', (e) => {
+                if (!isDrawing || currentTool === 'guide' || !tab.img) return;
+                const rect = mainCanvas.getBoundingClientRect();
+                const x = (e.clientX - rect.left) / tab.zoom, y = (e.clientY - rect.top) / tab.zoom;
+
+                if (currentTool === 'select') {
+                    selectionBox.w = x - selectionBox.x; selectionBox.h = y - selectionBox.y;
+                    oCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+                    oCtx.strokeStyle = '#fff'; oCtx.lineWidth = 1; oCtx.setLineDash([5 / tab.zoom, 5 / tab.zoom]);
+                    oCtx.strokeRect(selectionBox.x, selectionBox.y, selectionBox.w, selectionBox.h);
+                    oCtx.strokeStyle = '#000'; oCtx.lineDashOffset = 5 / tab.zoom;
+                    oCtx.strokeRect(selectionBox.x, selectionBox.y, selectionBox.w, selectionBox.h);
+                } else if (currentTool === 'eraser') {
+                    mainCanvas.getContext('2d').lineTo(x, y); mainCanvas.getContext('2d').stroke();
+                }
+            });
+
+            canvasWrapper.addEventListener('mouseup', () => {
+                if (!isDrawing || currentTool === 'guide' || !tab.img) return;
+                isDrawing = false;
+                if (currentTool === 'eraser') {
+                    mainCanvas.getContext('2d').globalCompositeOperation = 'source-over';
+                    tab.tempCanvas.getContext('2d', { willReadFrequently: true }).clearRect(0, 0, tab.tempCanvas.width, tab.tempCanvas.height);
+                    tab.tempCanvas.getContext('2d').drawImage(mainCanvas, 0, 0); updatePreviews();
+                }
+            });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            const isCtrl = e.metaKey || e.ctrlKey;
+            if (isCtrl && e.key.toLowerCase() === 'z') { 
+                e.preventDefault(); const tab = getTabById(currentTabId);
+                if (tab && tab.undoStack.length > 0) {
+                    const prevState = tab.undoStack.pop();
+                    tab.tempCanvas.getContext('2d', { willReadFrequently: true }).putImageData(prevState.imageData, 0, 0);
+                    tab.guides = prevState.guides; updateMainCanvas(currentTabId); renderGuides(currentTabId); updatePreviews();
+                }
+            }
+            if (isCtrl && e.key.toLowerCase() === 'c' && currentTool === 'select' && selectionBox) { 
+                e.preventDefault(); const tab = getTabById(currentTabId);
+                const sx = Math.min(selectionBox.x, selectionBox.x + selectionBox.w), sy = Math.min(selectionBox.y, selectionBox.y + selectionBox.h);
+                const sw = Math.abs(selectionBox.w), sh = Math.abs(selectionBox.h);
+                if (sw === 0 || sh === 0) return;
+                const cropCanvas = document.createElement('canvas'); cropCanvas.width = sw; cropCanvas.height = sh;
+                cropCanvas.getContext('2d').drawImage(tab.tempCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+                cropCanvas.toBlob(blob => {
+                    try { navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).then(() => showToast('복사 완료! (Ctrl+V)')); } 
+                    catch (err) { showAlert('복사 실패'); }
+                }, 'image/png');
+            }
+            if (isCtrl && (e.key === '=' || e.key === '+' || e.key === '-' || e.key === '0')) { 
+                e.preventDefault(); const tab = getTabById(currentTabId);
+                if (tab) {
+                    if (e.key === '0') tab.zoom = 1; else if (e.key === '-') tab.zoom = Math.max(0.1, tab.zoom - 0.1); else tab.zoom = Math.min(5, tab.zoom + 0.1);
+                    applyZoom(currentTabId);
+                }
+            }
+        });
+
+        document.addEventListener('paste', (e) => {
+            const items = (e.clipboardData || window.clipboardData).items;
+            for (let item of items) {
+                if (item.type.indexOf("image") === 0) {
+                    const reader = new FileReader(); reader.onload = (ev) => createNewTab(ev.target.result, '붙여넣은 이미지');
+                    reader.readAsDataURL(item.getAsFile()); e.preventDefault(); return;
+                }
+            }
+        });
+
+        function saveStateToUndoStack(tabId) {
+            const tab = getTabById(tabId), ctx = tab.tempCanvas.getContext('2d', { willReadFrequently: true });
+            tab.undoStack.push({ imageData: ctx.getImageData(0, 0, tab.tempCanvas.width, tab.tempCanvas.height), guides: JSON.parse(JSON.stringify(tab.guides)) });
+            if (tab.undoStack.length > 50) tab.undoStack.shift();
+        }
+
+        function floodFillTransparent(canvas, x, y, tolerance) {
+            const ctx = canvas.getContext('2d', { willReadFrequently: true }), imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const pixels = imageData.data, w = imageData.width, h = imageData.height;
+            const targetIndex = (Math.round(y) * w + Math.round(x)) * 4;
+            const targetColor = [ pixels[targetIndex], pixels[targetIndex + 1], pixels[targetIndex + 2], pixels[targetIndex + 3] ];
+            if (targetColor[3] < 10) return;
+
+            const visited = new Uint8Array(w * h), queue = [[Math.round(x), Math.round(y)]];
+            while (queue.length > 0) {
+                const [cx, cy] = queue.shift();
+                if (cx < 0 || cx >= w || cy < 0 || cy >= h) continue;
+                const index = (cy * w + cx); if (visited[index]) continue; visited[index] = 1;
+                const pIndex = index * 4;
+                if (Math.abs(pixels[pIndex] - targetColor[0]) <= tolerance && Math.abs(pixels[pIndex+1] - targetColor[1]) <= tolerance && Math.abs(pixels[pIndex+2] - targetColor[2]) <= tolerance && Math.abs(pixels[pIndex+3] - targetColor[3]) <= tolerance) {
+                    pixels[pIndex + 3] = 0; queue.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        function updateMainCanvas(tabId) {
+            const mainCtx = document.getElementById(`tab-content-${tabId}`).querySelector('.main-canvas').getContext('2d');
+            mainCtx.clearRect(0, 0, mainCtx.canvas.width, mainCtx.canvas.height); mainCtx.drawImage(getTabById(tabId).tempCanvas, 0, 0);
+        }
+
+        function setTool(tool) {
+            currentTool = tool; document.querySelectorAll('.toolbar button').forEach(b => b.classList.remove('active'));
+            document.getElementById(`tool-${tool}`).classList.add('active');
+            if (currentTabId !== 0) {
+                if (tool !== 'select') { selectionBox = null; clearOverlay(currentTabId); }
+                const wrapper = document.getElementById(`tab-content-${currentTabId}`).querySelector('#canvas-wrapper');
+                wrapper.style.cursor = (tool === 'guide' || tool === 'select') ? 'crosshair' : 'none';
+            }
+            updateCursorSize();
+        }
+        
+        window.setTool = setTool; // HTML onClick 연결을 위해 글로벌 할당
+
+        document.getElementById('file-input').onchange = (e) => {
+            const reader = new FileReader(); reader.onload = (ev) => createNewTab(ev.target.result, e.target.files[0].name);
+            reader.readAsDataURL(e.target.files[0]);
+        };
+
+        function loadImage(tabId, src) {
+            const tab = getTabById(tabId), tabContent = document.getElementById(`tab-content-${tabId}`);
+            const [bgCanvas, mainCanvas, overlayCanvas] = tabContent.querySelectorAll('canvas'), temp = new Image(); temp.crossOrigin = "Anonymous";
+            temp.onload = () => {
+                tab.img = temp; tab.undoStack = []; 
+                [bgCanvas, mainCanvas, overlayCanvas, tab.tempCanvas].forEach(c => { c.width = tab.img.width; c.height = tab.img.height; });
+                tab.tempCanvas.getContext('2d').drawImage(tab.img, 0, 0); updateMainCanvas(tabId); tab.guides = { h: [], v: [] };
+                renderGuides(tabId); updatePreviews(); applyZoom(tabId); switchToTab(tabId); 
+            };
+            temp.src = src;
+        }
+
+        // --- 가이드 상태를 tab.guides 배열에 동기화하는 헬퍼 ---
+        function updateGuidesState(tabId) {
+            const tab = getTabById(tabId);
+            if (!tab) return;
+            const container = document.getElementById(`tab-content-${tabId}`);
+            if (!container) return;
+            
+            const hLines = [...container.querySelectorAll('.guide.horizontal')].map(g => parseFloat(g.dataset.pos)).sort((a,b)=>a-b);
+            const vLines = [...container.querySelectorAll('.guide.vertical')].map(g => parseFloat(g.dataset.pos)).sort((a,b)=>a-b);
+            
+            tab.guides.h = hLines;
+            tab.guides.v = vLines;
+        }
+
+        function createGuide(type, e, tabId) {
+            const tab = getTabById(tabId); if (!tab.img || currentTool !== 'guide' || currentTabId !== tabId) return;
+            const canvasWrapper = document.getElementById(`tab-content-${tabId}`).querySelector('#canvas-wrapper');
+            
+            // 선 추가 전 Undo 상태 저장
+            saveStateToUndoStack(tabId);
+
+            const guide = document.createElement('div'); guide.className = `guide ${type}`; canvasWrapper.appendChild(guide);
+
+            const move = (me) => {
+                const rect = canvasWrapper.getBoundingClientRect();
+                let pos = (type === 'horizontal') ? (me.clientY - rect.top) / tab.zoom : (me.clientX - rect.left) / tab.zoom;
+                pos = Math.max(0, Math.min(pos, (type === 'horizontal' ? tab.img.height : tab.img.width)));
+                guide.style[type === 'horizontal' ? 'top' : 'left'] = (type === 'horizontal' ? (pos / tab.img.height * 100) : (pos / tab.img.width * 100)) + '%';
+                guide.dataset.pos = pos; 
+                updatePreviews();
+            };
+            const up = () => { 
+                window.removeEventListener('mousemove', move); 
+                window.removeEventListener('mouseup', up); 
+                updateGuidesState(tabId);
+                updatePreviews();
+            };
+            window.addEventListener('mousemove', move); window.addEventListener('mouseup', up); move(e);
+            
+            guide.onmousedown = (ev) => { 
+                if (currentTool !== 'guide') return; 
+                ev.stopPropagation(); 
+                saveStateToUndoStack(tabId); // 드래그 시작 전 Undo 상태 저장
+                window.addEventListener('mousemove', move); 
+                window.addEventListener('mouseup', up); 
+            };
+
+            // 더블클릭 시 삭제 (취소/제거) 구현
+            guide.ondblclick = (ev) => {
+                ev.stopPropagation();
+                saveStateToUndoStack(tabId);
+                guide.remove();
+                updateGuidesState(tabId);
+                updatePreviews();
+                showToast('가이드선이 삭제되었습니다.');
+            };
+        }
+        
+        window.createGuide = createGuide; // HTML onClick 연결
+
+        function renderGuides(tabId) {
+            const tab = getTabById(tabId), canvasWrapper = document.getElementById(`tab-content-${tabId}`).querySelector('#canvas-wrapper');
+            document.getElementById(`tab-content-${tabId}`).querySelectorAll('.guide').forEach(g => g.remove());
+            tab.guides.h.forEach(pos => { const g = document.createElement('div'); g.className = 'guide horizontal'; g.style.top = (pos / tab.img.height * 100) + '%'; g.dataset.pos = pos; canvasWrapper.appendChild(g); });
+            tab.guides.v.forEach(pos => { const g = document.createElement('div'); g.className = 'guide vertical'; g.style.left = (pos / tab.img.width * 100) + '%'; g.dataset.pos = pos; canvasWrapper.appendChild(g); });
+        }
+
+        function updatePreviews() {
+            if (currentTabId === 0) { previewList.innerHTML = ''; return; }
+            const tab = getTabById(currentTabId); if (!tab.img) return; previewList.innerHTML = '';
+            const hLines = [...document.querySelectorAll(`#tab-content-${currentTabId} .guide.horizontal`)].map(g => parseFloat(g.dataset.pos)).sort((a,b)=>a-b);
+            const vLines = [...document.querySelectorAll(`#tab-content-${currentTabId} .guide.vertical`)].map(g => parseFloat(g.dataset.pos)).sort((a,b)=>a-b);
+            const hPoints = [0, ...hLines, tab.img.height], vPoints = [0, ...vLines, tab.img.width];
+
+            for (let i = 0; i < hPoints.length - 1; i++) {
+                for (let j = 0; j < vPoints.length - 1; j++) {
+                    const w = vPoints[j+1] - vPoints[j], h = hPoints[i+1] - hPoints[i]; if (w < 1 || h < 1) continue;
+                    const pCanvas = document.createElement('canvas'); pCanvas.width = w; pCanvas.height = h;
+                    pCanvas.getContext('2d').drawImage(tab.tempCanvas, vPoints[j], hPoints[i], w, h, 0, 0, w, h);
+                    const div = document.createElement('div'); div.className = 'preview-item';
+                    const pImg = new Image(); pImg.src = pCanvas.toDataURL('image/png');
+                    div.appendChild(pImg); previewList.appendChild(div);
+                }
+            }
+
+            // 저장 버튼 텍스트 및 상태 갱신
+            const saveBtn = document.getElementById('save-btn');
+            if (saveBtn) {
+                const imgs = previewList.querySelectorAll('img');
+                if (imgs.length <= 1) {
+                    saveBtn.innerHTML = "💾 PNG 저장";
+                } else {
+                    saveBtn.innerHTML = `💾 ZIP 저장 (${imgs.length})`;
+                }
+            }
+        }
+
+        // === 핵심: 안전한 고화질 AI 누끼 처리 ===
+        window.removeBackgroundLocally = async function() {
+            if (currentTabId === 0) return; 
+            if (window.location.protocol === 'file:') {
+                showAlert("보안 오류: file:// 환경에서는 이 AI 모델이 작동하지 않습니다.\n\nVS Code의 Live Server나 로컬 웹서버(http://localhost)를 통해 실행해주세요.");
+                return;
+            }
+            
+            // 모듈 로드가 안 되었을 경우 대비
+            if (!window.imglyRemoveBackground) {
+                showAlert("AI 엔진이 아직 로딩되지 않았거나 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+                return;
+            }
+
+            const tab = getTabById(currentTabId);
+            loadingText.innerText = "초고화질 AI 분석 중...";
+            loadingSub.innerText = "최초 1회 실행 시 모델(~40MB) 다운로드로 시간이 걸립니다.";
+            loading.style.display = 'flex';
+            
+            try {
+                saveStateToUndoStack(currentTabId);
+                
+                // Blob으로 변환하여 메모리 폭발(OOM) 완벽 방지
+                const blob = await new Promise(resolve => tab.tempCanvas.toBlob(resolve, 'image/png'));
+                
+                // CDN 주소 명시
+                const config = {
+                    publicPath: "https://staticimgly.com/@imgly/background-removal-data/1.4.3/dist/"
+                };
+                
+                const resultBlob = await window.imglyRemoveBackground(blob, config);
+                
+                const url = URL.createObjectURL(resultBlob);
+                const resultImg = new Image();
+                resultImg.onload = () => {
+                    const ctx = tab.tempCanvas.getContext('2d');
+                    ctx.clearRect(0, 0, tab.tempCanvas.width, tab.tempCanvas.height);
+                    ctx.drawImage(resultImg, 0, 0);
+                    URL.revokeObjectURL(url);
+                    updateMainCanvas(currentTabId); 
+                    updatePreviews(); 
+                    loading.style.display = 'none';
+                };
+                resultImg.src = url;
+            } catch (error) {
+                console.error("누끼 에러:", error);
+                loading.style.display = 'none';
+                showAlert("처리 중 문제가 발생했습니다. \n로컬 서버 환경인지 확인하시고, 너무 큰 이미지는 크기를 줄여주세요.");
+            }
+        };
+
+        async function downloadZIP() {
+            if (typeof JSZip === 'undefined') {
+                showAlert('ZIP 라이브러리(JSZip)가 로드되지 않았거나 차단되었습니다. 인터넷 연결을 확인해 주세요.');
+                return;
+            }
+            
+            const tab = getTabById(currentTabId);
+            const originalName = tab ? tab.name : 'slices';
+            let baseName = 'slices';
+            if (originalName) {
+                const lastDotIdx = originalName.lastIndexOf('.');
+                baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+            }
+
+            const zip = new JSZip(); 
+            previewList.querySelectorAll('img').forEach((m, i) => zip.file(`slice_${i+1}.png`, m.src.split(',')[1], {base64: true}));
+            const content = await zip.generateAsync({type:"blob"});
+            const blobUrl = URL.createObjectURL(content);
+            
+            const a = document.createElement('a'); 
+            a.href = blobUrl; 
+            a.download = `${baseName}_slices.zip`; 
+            
+            // 크로스 브라우저 표준 DOM 바인딩 다운로드
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+        }
+        window.downloadZIP = downloadZIP;
+
+        window.downloadSVG = function() {
+            const tab = getTabById(currentTabId); if (!tab || !tab.img) return;
+            loadingText.innerText = "초깔끔 벡터(SVG)로 변환 중...";
+            loadingSub.innerText = "색상을 단순화하고 자잘한 노이즈를 완벽히 제거합니다.";
+            loading.style.display = 'flex';
+
+            setTimeout(() => {
+                try {
+                    // 강제로 해상도를 조정하여 픽셀 디테일을 적정 수준으로 고정
+                    const MAX_SIZE = 1200; 
+                    let scale = 1;
+                    if (tab.tempCanvas.width > MAX_SIZE || tab.tempCanvas.height > MAX_SIZE) {
+                        scale = MAX_SIZE / Math.max(tab.tempCanvas.width, tab.tempCanvas.height);
+                    }
+
+                    const traceCanvas = document.createElement('canvas');
+                    traceCanvas.width = tab.tempCanvas.width * scale; 
+                    traceCanvas.height = tab.tempCanvas.height * scale;
+                    const ctx = traceCanvas.getContext('2d');
+                    ctx.imageSmoothingEnabled = false;
+                    ctx.drawImage(tab.tempCanvas, 0, 0, traceCanvas.width, traceCanvas.height);
+
+                    // 🚀 [핵심 개선] 픽셀 단위 하드 포스터라이징 (지저분한 찌꺼기/그라데이션 원천 봉쇄)
+                    const pixels = ctx.getImageData(0, 0, traceCanvas.width, traceCanvas.height);
+                    const d = pixels.data;
+                    for (let i = 0; i < d.length; i += 4) {
+                        // 1. 알파 투명도 하드 쓰레숄딩: 경계선의 불투명한 찌꺼기(샤드 현상의 주범)를 0 아니면 255로 고정
+                        d[i+3] = d[i+3] < 127 ? 0 : 255;
+                        // 2. 색상 구간 압축: 미세하게 다른 중간색들을 가장 가까운 기준색으로 완전히 합쳐서 단일 면 유도
+                        if(d[i+3] > 0) {
+                            d[i]   = Math.round(d[i] / 16) * 16;
+                            d[i+1] = Math.round(d[i+1] / 16) * 16;
+                            d[i+2] = Math.round(d[i+2] / 16) * 16;
+                        }
+                    }
+                    ctx.putImageData(pixels, 0, 0);
+
+                    // 💎 100% 밀착 추적형 하이퍼 정밀 옵션 (지글거리는 현상 제거 및 매끄러운 곡선 생성)
+                    const options = { 
+                        numberofcolors: 24,     // 넉넉하게 잡되 이미지가 정제되었으므로 깔끔함 유지
+                        mincolorratio: 0,
+                        colorquantcycles: 1,
+                        blurradius: 0,          
+                        blurdelta: 20, 
+                        strokewidth: 0,         
+                        linefilter: false,
+                        ltres: 0.05,            // 0에 수렴하도록 극한 하향 (면을 쪼개지 않고 원형태를 그대로 완벽 추적)
+                        qtres: 0.05,            // 곡선 오차 한계 극한 하향 (동그라미를 찌그러짐 없이 완벽한 곡선으로 복원)
+                        pathomit: 1,            // 빈틈이 생기지 않도록 모든 유효 면적 포함
+                        roundcoords: 3,         // 좌표 소수점 3자리까지 기록하여 미세 간극 완벽 소멸 (초강수)
+                        scale: 1 / scale,       
+                        viewbox: false, desc: false, pal: false 
+                    };
+
+                    ImageTracer.imageToSVG(traceCanvas.toDataURL('image/png'), function(svgstr) {
+                        const blob = new Blob([svgstr], {type: "image/svg+xml"});
+                        const a = document.createElement('a'); 
+                        a.href = URL.createObjectURL(blob); 
+                        a.download = "super_clean_vector.svg"; 
+                        a.click(); 
+                        loading.style.display = 'none';
+                    }, options);
+                } catch (error) {
+                    showAlert('SVG 변환 중 오류가 발생했습니다.'); 
+                    loading.style.display = 'none';
+                }
+            }, 300);
+        };
+        
+        // --- 드래그앤드롭 기능 구현 ---
+        const dragDropOverlay = document.getElementById('drag-drop-overlay');
+        
+        window.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            dragDropOverlay.classList.add('active');
+        });
+
+        window.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            if (!e.relatedTarget) {
+                dragDropOverlay.classList.remove('active');
+            }
+        });
+
+        window.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (!dragDropOverlay.classList.contains('active')) {
+                dragDropOverlay.classList.add('active');
+            }
+        });
+
+        window.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dragDropOverlay.classList.remove('active');
+
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                let loadedCount = 0;
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    if (file.type.startsWith('image/')) {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                            createNewTab(ev.target.result, file.name);
+                            loadedCount++;
+                            if (loadedCount === 1) {
+                                showToast(`${file.name} 불러오기 완료!`);
+                            } else if (loadedCount > 1) {
+                                showToast(`${loadedCount}개의 이미지 불러오기 완료!`);
+                            }
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                }
+                setTimeout(() => {
+                    const isAnyImage = Array.from(files).some(f => f.type.startsWith('image/'));
+                    if (!isAnyImage && files.length > 0) {
+                        showAlert('이미지 파일만 불러올 수 있습니다.');
+                    }
+                }, 100);
+            }
+        });
+
+        // --- Data URL을 Blob으로 안전하게 변환하는 헬퍼 함수 ---
+        function dataURLtoBlob(dataurl) {
+            const arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
+            let i = n;
+            while(i--) {
+                u8arr[i] = bstr.charCodeAt(i);
+            }
+            return new Blob([u8arr], {type:mime});
+        }
+
+        // --- 스마트 저장(PNG/ZIP) 기능 구현 ---
+        window.saveFile = async function() {
+            const imgs = previewList.querySelectorAll('img');
+            if (imgs.length === 0) {
+                showAlert('저장할 이미지가 없습니다.');
+                return;
+            }
+            if (imgs.length === 1) {
+                const img = imgs[0];
+                const tab = getTabById(currentTabId);
+                const originalName = tab ? tab.name : 'image';
+                
+                let baseName = 'image';
+                if (originalName) {
+                    const lastDotIdx = originalName.lastIndexOf('.');
+                    baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+                }
+                
+                // Data URL의 크기/보안 한계를 넘기 위해 Blob으로 변환하여 안전 다운로드
+                const blob = dataURLtoBlob(img.src);
+                const blobUrl = URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `${baseName}_edited.png`;
+                
+                // 크로스 브라우저 표준 DOM 바인딩 다운로드
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+                showToast('PNG 이미지 저장 완료!');
+            } else {
+                await downloadZIP();
+                showToast('ZIP 압축 저장 완료!');
+            }
+        };
+
+        // 전역 스코프 내보내기 (HTML 이벤트용)
+        window.createNewTab = createNewTab;
+        window.closeTab = closeTab;
+        window.updateCursorSize = updateCursorSize;
+    </script>
+</body>
+</html>
