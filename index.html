@@ -494,9 +494,27 @@
             temp.src = src;
         }
 
+        // --- 가이드 상태를 tab.guides 배열에 동기화하는 헬퍼 ---
+        function updateGuidesState(tabId) {
+            const tab = getTabById(tabId);
+            if (!tab) return;
+            const container = document.getElementById(`tab-content-${tabId}`);
+            if (!container) return;
+            
+            const hLines = [...container.querySelectorAll('.guide.horizontal')].map(g => parseFloat(g.dataset.pos)).sort((a,b)=>a-b);
+            const vLines = [...container.querySelectorAll('.guide.vertical')].map(g => parseFloat(g.dataset.pos)).sort((a,b)=>a-b);
+            
+            tab.guides.h = hLines;
+            tab.guides.v = vLines;
+        }
+
         function createGuide(type, e, tabId) {
             const tab = getTabById(tabId); if (!tab.img || currentTool !== 'guide' || currentTabId !== tabId) return;
             const canvasWrapper = document.getElementById(`tab-content-${tabId}`).querySelector('#canvas-wrapper');
+            
+            // 선 추가 전 Undo 상태 저장
+            saveStateToUndoStack(tabId);
+
             const guide = document.createElement('div'); guide.className = `guide ${type}`; canvasWrapper.appendChild(guide);
 
             const move = (me) => {
@@ -504,11 +522,34 @@
                 let pos = (type === 'horizontal') ? (me.clientY - rect.top) / tab.zoom : (me.clientX - rect.left) / tab.zoom;
                 pos = Math.max(0, Math.min(pos, (type === 'horizontal' ? tab.img.height : tab.img.width)));
                 guide.style[type === 'horizontal' ? 'top' : 'left'] = (type === 'horizontal' ? (pos / tab.img.height * 100) : (pos / tab.img.width * 100)) + '%';
-                guide.dataset.pos = pos; updatePreviews();
+                guide.dataset.pos = pos; 
+                updatePreviews();
             };
-            const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+            const up = () => { 
+                window.removeEventListener('mousemove', move); 
+                window.removeEventListener('mouseup', up); 
+                updateGuidesState(tabId);
+                updatePreviews();
+            };
             window.addEventListener('mousemove', move); window.addEventListener('mouseup', up); move(e);
-            guide.onmousedown = (ev) => { if (currentTool !== 'guide') return; ev.stopPropagation(); window.addEventListener('mousemove', move); window.addEventListener('mouseup', up); };
+            
+            guide.onmousedown = (ev) => { 
+                if (currentTool !== 'guide') return; 
+                ev.stopPropagation(); 
+                saveStateToUndoStack(tabId); // 드래그 시작 전 Undo 상태 저장
+                window.addEventListener('mousemove', move); 
+                window.addEventListener('mouseup', up); 
+            };
+
+            // 더블클릭 시 삭제 (취소/제거) 구현
+            guide.ondblclick = (ev) => {
+                ev.stopPropagation();
+                saveStateToUndoStack(tabId);
+                guide.remove();
+                updateGuidesState(tabId);
+                updatePreviews();
+                showToast('가이드선이 삭제되었습니다.');
+            };
         }
         
         window.createGuide = createGuide; // HTML onClick 연결
@@ -601,11 +642,20 @@
             }
         };
 
-        window.downloadZIP = async function() {
-            const zip = new JSZip(); previewList.querySelectorAll('img').forEach((m, i) => zip.file(`slice_${i+1}.png`, m.src.split(',')[1], {base64: true}));
+        async function downloadZIP() {
+            if (typeof JSZip === 'undefined') {
+                showAlert('ZIP 라이브러리(JSZip)가 로드되지 않았거나 차단되었습니다. 인터넷 연결을 확인해 주세요.');
+                return;
+            }
+            const zip = new JSZip(); 
+            previewList.querySelectorAll('img').forEach((m, i) => zip.file(`slice_${i+1}.png`, m.src.split(',')[1], {base64: true}));
             const content = await zip.generateAsync({type:"blob"});
-            const a = document.createElement('a'); a.href = URL.createObjectURL(content); a.download = "slices.zip"; a.click();
-        };
+            const a = document.createElement('a'); 
+            a.href = URL.createObjectURL(content); 
+            a.download = "slices.zip"; 
+            a.click();
+        }
+        window.downloadZIP = downloadZIP;
 
         window.downloadSVG = function() {
             const tab = getTabById(currentTabId); if (!tab || !tab.img) return;
