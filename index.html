@@ -647,13 +647,30 @@
                 showAlert('ZIP 라이브러리(JSZip)가 로드되지 않았거나 차단되었습니다. 인터넷 연결을 확인해 주세요.');
                 return;
             }
+            
+            const tab = getTabById(currentTabId);
+            const originalName = tab ? tab.name : 'slices';
+            let baseName = 'slices';
+            if (originalName) {
+                const lastDotIdx = originalName.lastIndexOf('.');
+                baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+            }
+
             const zip = new JSZip(); 
             previewList.querySelectorAll('img').forEach((m, i) => zip.file(`slice_${i+1}.png`, m.src.split(',')[1], {base64: true}));
             const content = await zip.generateAsync({type:"blob"});
+            const blobUrl = URL.createObjectURL(content);
+            
             const a = document.createElement('a'); 
-            a.href = URL.createObjectURL(content); 
-            a.download = "slices.zip"; 
+            a.href = blobUrl; 
+            a.download = `${baseName}_slices.zip`; 
+            
+            // 크로스 브라우저 표준 DOM 바인딩 다운로드
+            document.body.appendChild(a);
             a.click();
+            document.body.removeChild(a);
+            
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
         }
         window.downloadZIP = downloadZIP;
 
@@ -780,6 +797,17 @@
             }
         });
 
+        // --- Data URL을 Blob으로 안전하게 변환하는 헬퍼 함수 ---
+        function dataURLtoBlob(dataurl) {
+            const arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
+            let i = n;
+            while(i--) {
+                u8arr[i] = bstr.charCodeAt(i);
+            }
+            return new Blob([u8arr], {type:mime});
+        }
+
         // --- 스마트 저장(PNG/ZIP) 기능 구현 ---
         window.saveFile = async function() {
             const imgs = previewList.querySelectorAll('img');
@@ -791,11 +819,27 @@
                 const img = imgs[0];
                 const tab = getTabById(currentTabId);
                 const originalName = tab ? tab.name : 'image';
-                const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+                
+                let baseName = 'image';
+                if (originalName) {
+                    const lastDotIdx = originalName.lastIndexOf('.');
+                    baseName = lastDotIdx !== -1 ? originalName.substring(0, lastDotIdx) : originalName;
+                }
+                
+                // Data URL의 크기/보안 한계를 넘기 위해 Blob으로 변환하여 안전 다운로드
+                const blob = dataURLtoBlob(img.src);
+                const blobUrl = URL.createObjectURL(blob);
+                
                 const a = document.createElement('a');
-                a.href = img.src;
+                a.href = blobUrl;
                 a.download = `${baseName}_edited.png`;
+                
+                // 크로스 브라우저 표준 DOM 바인딩 다운로드
+                document.body.appendChild(a);
                 a.click();
+                document.body.removeChild(a);
+                
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
                 showToast('PNG 이미지 저장 완료!');
             } else {
                 await downloadZIP();
