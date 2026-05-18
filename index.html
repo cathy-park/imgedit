@@ -197,7 +197,8 @@
         
         <div class="divider"></div>
         <button id="tool-guide" class="active" onclick="setTool('guide')">📏 가이드선</button>
-        <button id="tool-select" onclick="setTool('select')">⬚ 사각 선택</button>
+        <button id="tool-select" onclick="setTool('select')">⬚ 사각선택해서 자르기</button>
+        <button id="btn-crop" onclick="cropImage()" style="background: #ff4757; display: none; font-weight: 600; box-shadow: 0 0 10px rgba(255, 71, 87, 0.4); margin-left: 2px;">✂️ 크롭</button>
         <button id="tool-eraser" onclick="setTool('eraser')">🧹 지우개</button>
         <input type="range" id="eraser-size" min="5" max="100" value="20" style="width:50px;" oninput="updateCursorSize()">
         <button id="tool-wand" onclick="setTool('wand')">🪄 마술봉</button>
@@ -292,7 +293,10 @@
             document.querySelector(`.tab-item[data-id="${tabId}"]`).classList.add('active');
             document.querySelectorAll('.tab-content').forEach(b => b.classList.remove('active'));
             document.getElementById(`tab-content-${tabId}`).classList.add('active');
-            selectGuide(null); selectionBox = null; clearOverlay(tabId); updatePreviews(); setTool(currentTool); applyZoom(tabId);
+            selectGuide(null); selectionBox = null; clearOverlay(tabId);
+            const cropBtn = document.getElementById('btn-crop');
+            if (cropBtn) cropBtn.style.display = 'none';
+            updatePreviews(); setTool(currentTool); applyZoom(tabId);
         }
 
         function closeTab(tabId, event) {
@@ -400,6 +404,14 @@
                     mainCanvas.getContext('2d').globalCompositeOperation = 'source-over';
                     tab.tempCanvas.getContext('2d', { willReadFrequently: true }).clearRect(0, 0, tab.tempCanvas.width, tab.tempCanvas.height);
                     tab.tempCanvas.getContext('2d').drawImage(mainCanvas, 0, 0); updatePreviews();
+                } else if (currentTool === 'select' && selectionBox) {
+                    const sw = Math.abs(selectionBox.w), sh = Math.abs(selectionBox.h);
+                    const cropBtn = document.getElementById('btn-crop');
+                    if (sw > 5 && sh > 5) {
+                        if (cropBtn) cropBtn.style.display = 'inline-block';
+                    } else {
+                        if (cropBtn) cropBtn.style.display = 'none';
+                    }
                 }
             });
 
@@ -412,6 +424,15 @@
 
         document.addEventListener('keydown', (e) => {
             const isCtrl = e.metaKey || e.ctrlKey;
+            // Enter: 사각 선택 툴일 때 크롭 실행
+            if (e.key === 'Enter' && currentTool === 'select' && selectionBox) {
+                const sw = Math.abs(selectionBox.w), sh = Math.abs(selectionBox.h);
+                if (sw > 5 && sh > 5) {
+                    e.preventDefault();
+                    cropImage();
+                    return;
+                }
+            }
             // Delete/Backspace: 선택된 가이드선 삭제 (input 포커스 중 오동작 방지)
             if ((e.key === 'Delete' || e.key === 'Backspace') && selectedGuide && !isCtrl) {
                 const activeEl = document.activeElement;
@@ -502,7 +523,12 @@
             currentTool = tool; document.querySelectorAll('.toolbar button').forEach(b => b.classList.remove('active'));
             document.getElementById(`tool-${tool}`).classList.add('active');
             if (currentTabId !== 0) {
-                if (tool !== 'select') { selectionBox = null; clearOverlay(currentTabId); }
+                if (tool !== 'select') {
+                    selectionBox = null;
+                    clearOverlay(currentTabId);
+                    const cropBtn = document.getElementById('btn-crop');
+                    if (cropBtn) cropBtn.style.display = 'none';
+                }
                 const wrapper = document.getElementById(`tab-content-${currentTabId}`).querySelector('#canvas-wrapper');
                 wrapper.style.cursor = (tool === 'guide' || tool === 'select') ? 'crosshair' : 'none';
             }
@@ -894,6 +920,83 @@
                 console.error('저장 실패:', err);
                 showAlert('저장 중 오류가 발생했습니다. 다시 시도해주세요.');
             }
+        };
+
+        window.cropImage = function() {
+            if (currentTabId === 0) return;
+            const tab = getTabById(currentTabId);
+            if (!tab || !tab.img || !selectionBox) return;
+
+            const sx = Math.min(selectionBox.x, selectionBox.x + selectionBox.w);
+            const sy = Math.min(selectionBox.y, selectionBox.y + selectionBox.h);
+            const sw = Math.abs(selectionBox.w);
+            const sh = Math.abs(selectionBox.h);
+
+            if (sw <= 5 || sh <= 5) {
+                showAlert('크롭할 영역이 너무 작습니다.');
+                return;
+            }
+
+            saveStateToUndoStack(currentTabId);
+
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = sw;
+            cropCanvas.height = sh;
+            cropCanvas.getContext('2d').drawImage(tab.tempCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+            const cropDataUrl = cropCanvas.toDataURL('image/png');
+            const newImg = new Image();
+            newImg.onload = () => {
+                tab.img = newImg;
+                
+                const tabContent = document.getElementById(`tab-content-${currentTabId}`);
+                if (!tabContent) return;
+                
+                const bgCanvas = tabContent.querySelector('.bg-canvas');
+                const mainCanvas = tabContent.querySelector('.main-canvas');
+                const overlayCanvas = tabContent.querySelector('.overlay-canvas');
+                
+                [bgCanvas, mainCanvas, overlayCanvas, tab.tempCanvas].forEach(c => {
+                    if (c) {
+                        c.width = newImg.width;
+                        c.height = newImg.height;
+                    }
+                });
+
+                tab.tempCanvas.getContext('2d').drawImage(newImg, 0, 0);
+                updateMainCanvas(currentTabId);
+
+                // 가이드선 보정 및 재생성
+                const newHLines = [];
+                tab.guides.h.forEach(pos => {
+                    const newPos = pos - sy;
+                    if (newPos >= 0 && newPos <= sh) {
+                        newHLines.push(newPos);
+                    }
+                });
+                const newVLines = [];
+                tab.guides.v.forEach(pos => {
+                    const newPos = pos - sx;
+                    if (newPos >= 0 && newPos <= sw) {
+                        newVLines.push(newPos);
+                    }
+                });
+                tab.guides.h = newHLines;
+                tab.guides.v = newVLines;
+
+                renderGuides(currentTabId);
+
+                selectionBox = null;
+                clearOverlay(currentTabId);
+
+                const cropBtn = document.getElementById('btn-crop');
+                if (cropBtn) cropBtn.style.display = 'none';
+
+                applyZoom(currentTabId);
+                updatePreviews();
+                showToast('선택 영역 크롭 완료! ✂️');
+            };
+            newImg.src = cropDataUrl;
         };
 
         // 전역 스코프 내보내기 (HTML 이벤트용)
